@@ -1,0 +1,21 @@
+[package]
+name = "pdf-editor"
+version = "1.0.0"
+description = "A portable PDF editor"
+authors = ["TazKprime"]
+edition = "2021"
+
+[lib]
+name = "pdf_editor_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.1", features = [] }
+
+[dependencies]
+tauri = { version = "2.1", features = [] }
+tauri-plugin-dialog = "2.1"
+tauri-plugin-fs = "2.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
