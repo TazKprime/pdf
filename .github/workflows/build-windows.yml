@@ -28,7 +28,7 @@ jobs:
         run: npm ci
 
       - name: Build Tauri app
-        run: npx tauri build --target universal-pc-windows-msvc
+        run: npx tauri build --target x86_64-pc-windows-msvc
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
 
