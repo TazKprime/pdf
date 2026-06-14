@@ -1,7 +1,4 @@
 import { useState, useCallback, useRef, useEffect } from "react";
-import { open, save } from "@tauri-apps/plugin-dialog";
-import { readFile, writeFile } from "@tauri-apps/plugin-fs";
-import { invoke } from "@tauri-apps/api/core";
 import {
   getPdfPageCount,
   getPdfMetadata,
@@ -10,12 +7,7 @@ import {
   removePage,
   extractPages,
   setPdfMetadata as updateMetadata,
-  addPassword,
   duplicatePage,
-  addBlankPage,
-  drawRedaction,
-  drawHighlight,
-  drawLine,
   PdfMetadata,
 } from "./lib/pdfOperations";
 import { PdfToolbar } from "./components/PdfToolbar";
@@ -24,6 +16,20 @@ import { Sidebar } from "./components/Sidebar";
 import { WelcomeScreen } from "./components/WelcomeScreen";
 import { BookmarksPanel } from "./components/BookmarksPanel";
 import { MetadataPanel } from "./components/MetadataPanel";
+
+let dialogModule: any = null;
+let fsModule: any = null;
+let coreModule: any = null;
+
+async function loadTauriModules() {
+  try {
+    dialogModule = await import("@tauri-apps/plugin-dialog");
+    fsModule = await import("@tauri-apps/plugin-fs");
+    coreModule = await import("@tauri-apps/api/core");
+  } catch (e) {
+    console.warn("Tauri modules not available, running in browser mode:", e);
+  }
+}
 
 export interface PageData {
   index: number;
@@ -47,6 +53,11 @@ function App() {
   const [isModified, setIsModified] = useState(false);
   const [showSidebar, setShowSidebar] = useState(true);
   const [bookmarks, setBookmarks] = useState<{ title: string; page: number }[]>([]);
+  const [tauriReady, setTauriReady] = useState(false);
+
+  useEffect(() => {
+    loadTauriModules().then(() => setTauriReady(true));
+  }, []);
 
   const updatePdfData = useCallback(async (data: Uint8Array) => {
     setPdfData(data);
@@ -57,44 +68,61 @@ function App() {
     setPdfMeta(meta);
   }, []);
 
+  const loadPdfFromData = useCallback(async (data: Uint8Array, name: string) => {
+    setPdfData(data);
+    setFileName(name);
+    const count = await getPdfPageCount(data);
+    setPageCount(count);
+    const meta = await getPdfMetadata(data);
+    setPdfMeta(meta);
+    setCurrentPage(1);
+    setIsModified(false);
+  }, []);
+
   const loadPdf = useCallback(async (path: string) => {
+    if (!fsModule) return;
     setIsLoading(true);
     try {
-      const data = await readFile(path);
-      setPdfData(data);
+      const data = await fsModule.readFile(path);
+      const name = path.split(/[\\/]/).pop() || "Untitled.pdf";
       setFilePath(path);
-      setFileName(path.split(/[\\/]/).pop() || "Untitled.pdf");
-
-      const count = await getPdfPageCount(data);
-      setPageCount(count);
-
-      const meta = await getPdfMetadata(data);
-      setPdfMeta(meta);
-
-      setCurrentPage(1);
-      setIsModified(false);
+      await loadPdfFromData(data, name);
     } catch (err) {
       console.error("Failed to load PDF:", err);
-      alert(`Failed to load PDF: ${err}`);
     } finally {
       setIsLoading(false);
     }
-  }, []);
+  }, [loadPdfFromData]);
 
   const handleOpen = useCallback(async () => {
-    const selected = await open({
-      multiple: false,
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-    if (selected && typeof selected === "string") {
-      await loadPdf(selected);
+    if (dialogModule) {
+      const selected = await dialogModule.open({
+        multiple: false,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (selected && typeof selected === "string") {
+        await loadPdf(selected);
+      }
+    } else {
+      // Fallback: use file input
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".pdf";
+      input.onchange = async (e) => {
+        const file = (e.target as HTMLInputElement).files?.[0];
+        if (file) {
+          const buffer = await file.arrayBuffer();
+          await loadPdfFromData(new Uint8Array(buffer), file.name);
+        }
+      };
+      input.click();
     }
-  }, [loadPdf]);
+  }, [loadPdf, loadPdfFromData]);
 
   const handleSave = useCallback(async () => {
-    if (!filePath || !pdfData) return;
+    if (!filePath || !pdfData || !fsModule) return;
     try {
-      await writeFile(filePath, pdfData);
+      await fsModule.writeFile(filePath, pdfData);
       setIsModified(false);
     } catch (err) {
       console.error("Failed to save:", err);
@@ -103,21 +131,33 @@ function App() {
 
   const handleSaveAs = useCallback(async () => {
     if (!pdfData) return;
-    const savePath = await save({
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-      defaultPath: fileName,
-    });
-    if (savePath) {
-      try {
-        await writeFile(savePath, pdfData);
-        setFilePath(savePath);
-        setFileName(savePath.split(/[\\/]/).pop() || "Untitled.pdf");
-        setIsModified(false);
-      } catch (err) {
-        console.error("Failed to save as:", err);
+    if (dialogModule) {
+      const savePath = await dialogModule.save({
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+        defaultPath: fileName,
+      });
+      if (savePath && fsModule) {
+        try {
+          await fsModule.writeFile(savePath, pdfData);
+          setFilePath(savePath);
+          setFileName(savePath.split(/[\\/]/).pop() || "Untitled.pdf");
+          setIsModified(false);
+        } catch (err) {
+          console.error("Failed to save as:", err);
+        }
       }
+    } else {
+      // Fallback: download
+      const blob = new Blob([pdfData as BlobPart], { type: "application/pdf" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = fileName || "document.pdf";
+      a.click();
+      URL.revokeObjectURL(url);
+      setIsModified(false);
     }
-  }, [pdfData, fileName]);
+  }, [pdfData, fileName, filePath]);
 
   const handleRotatePage = useCallback(async (pageIndex: number, degrees: number) => {
     if (!pdfData) return;
@@ -131,11 +171,10 @@ function App() {
 
   const handleRemovePage = useCallback(async (pageIndex: number) => {
     if (!pdfData) return;
-    if (!confirm(`Remove page ${pageIndex + 1}?`)) return;
     try {
       const data = await removePage(pdfData, pageIndex);
       await updatePdfData(data);
-      if (currentPage > data.length) {
+      if (currentPage > pageCount) {
         setCurrentPage(Math.max(1, pageCount - 1));
       }
     } catch (err) {
@@ -154,48 +193,33 @@ function App() {
   }, [pdfData, updatePdfData]);
 
   const handleMerge = useCallback(async () => {
-    const selected = await open({
-      multiple: true,
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-    });
-    if (selected && selected.length > 0) {
-      try {
-        const allPaths = selected.map((s) => (typeof s === "string" ? s : s as string));
-        const allData: Uint8Array[] = [];
-        for (const p of allPaths) {
-          allData.push(await readFile(p));
+    if (dialogModule) {
+      const selected = await dialogModule.open({
+        multiple: true,
+        filters: [{ name: "PDF", extensions: ["pdf"] }],
+      });
+      if (selected && selected.length > 0) {
+        try {
+          const allPaths = selected.map((s: any) => (typeof s === "string" ? s : s as string));
+          const allData: Uint8Array[] = [];
+          for (const p of allPaths) {
+            allData.push(await fsModule.readFile(p));
+          }
+          const merged = await mergePdfs(allData);
+          const savePath = await dialogModule.save({
+            filters: [{ name: "PDF", extensions: ["pdf"] }],
+            defaultPath: "merged.pdf",
+          });
+          if (savePath) {
+            await fsModule.writeFile(savePath, merged);
+            await loadPdf(savePath);
+          }
+        } catch (err) {
+          console.error("Failed to merge:", err);
         }
-        const merged = await mergePdfs(allData);
-        const savePath = await save({
-          filters: [{ name: "PDF", extensions: ["pdf"] }],
-          defaultPath: "merged.pdf",
-        });
-        if (savePath) {
-          await writeFile(savePath, merged);
-          await loadPdf(savePath);
-        }
-      } catch (err) {
-        console.error("Failed to merge:", err);
       }
     }
   }, [loadPdf]);
-
-  const handleExtractPages = useCallback(async (pageNumbers: number[]) => {
-    if (!pdfData) return;
-    const savePath = await save({
-      filters: [{ name: "PDF", extensions: ["pdf"] }],
-      defaultPath: "extracted.pdf",
-    });
-    if (savePath) {
-      try {
-        const data = await extractPages(pdfData, pageNumbers);
-        await writeFile(savePath, data);
-        await loadPdf(savePath);
-      } catch (err) {
-        console.error("Failed to extract:", err);
-      }
-    }
-  }, [pdfData, loadPdf]);
 
   const handleZoomIn = useCallback(() => setZoom((z) => Math.min(z + 0.25, 5.0)), []);
   const handleZoomOut = useCallback(() => setZoom((z) => Math.max(z - 0.25, 0.25)), []);
@@ -208,20 +232,17 @@ function App() {
     y: number;
     w: number;
     h: number;
-    text?: string;
   }) => {
     if (!pdfData) return;
     try {
+      const ops = await import("./lib/pdfOperations");
       let data: Uint8Array;
       switch (ann.type) {
         case "redact":
-          data = await drawRedaction(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
+          data = await ops.drawRedaction(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
           break;
         case "highlight":
-          data = await drawHighlight(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
-          break;
-        case "text":
-          data = await drawLine(pdfData, ann.pageIndex, ann.x, ann.y, ann.x + ann.w, ann.y + ann.h);
+          data = await ops.drawHighlight(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
           break;
         default:
           return;
@@ -371,7 +392,7 @@ function PagesPanel({
               +
             </button>
             <button
-              title="Rotate 90° CW"
+              title="Rotate 90 CW"
               onClick={(e) => {
                 e.stopPropagation();
                 onRotate(i, 90);
@@ -380,7 +401,7 @@ function PagesPanel({
               ↻
             </button>
             <button
-              title="Rotate 90° CCW"
+              title="Rotate 90 CCW"
               onClick={(e) => {
                 e.stopPropagation();
                 onRotate(i, 270);
