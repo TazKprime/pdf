@@ -18,7 +18,6 @@ interface PdfViewerProps {
     y: number;
     w: number;
     h: number;
-    text?: string;
   }) => void;
 }
 
@@ -41,76 +40,95 @@ export function PdfViewer({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [pdfDoc, setPdfDoc] = useState<pdfjsLib.PDFDocumentProxy | null>(null);
+  const renderIdRef = useRef(0);
   const [selection, setSelection] = useState<SelectionRect | null>(null);
-  const [isRendering, setIsRendering] = useState(false);
+  const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     const loadDoc = async () => {
-      const doc = await pdfjsLib.getDocument({ data: pdfData.slice(0) }).promise;
-      setPdfDoc(doc);
+      try {
+        const data = pdfData.slice(0);
+        const doc = await pdfjsLib.getDocument({ data }).promise;
+        if (!cancelled) {
+          pdfDocRef.current = doc;
+        }
+      } catch (err) {
+        console.error("Failed to load PDF document:", err);
+      }
     };
     loadDoc();
+    return () => { cancelled = true; };
   }, [pdfData]);
 
   useEffect(() => {
-    if (!pdfDoc || !canvasRef.current || isRendering) return;
+    const doc = pdfDocRef.current;
+    const canvas = canvasRef.current;
+    if (!doc || !canvas) return;
+
+    const renderId = ++renderIdRef.current;
     let cancelled = false;
 
     const renderPage = async () => {
-      setIsRendering(true);
       try {
-        const page = await pdfDoc.getPage(currentPage);
-        if (cancelled) return;
+        const page = await doc.getPage(currentPage);
+        if (cancelled || renderId !== renderIdRef.current) return;
 
-        const canvas = canvasRef.current!;
-        const ctx = canvas.getContext("2d")!;
-        const viewport = page.getViewport({ scale: zoom * 1.5 });
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
 
-        canvas.height = viewport.height;
+        const scale = zoom * 1.5;
+        const viewport = page.getViewport({ scale });
+
         canvas.width = viewport.width;
+        canvas.height = viewport.height;
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         const renderTask = page.render({ canvasContext: ctx, viewport });
         await renderTask.promise;
 
-        if (cancelled) return;
+        if (cancelled || renderId !== renderIdRef.current) return;
 
         if (textLayerRef.current) {
           textLayerRef.current.innerHTML = "";
           textLayerRef.current.style.width = `${viewport.width}px`;
           textLayerRef.current.style.height = `${viewport.height}px`;
 
-          const textContent = await page.getTextContent();
-          const items = textContent.items as any[];
-
-          for (const item of items) {
-            if (!item.str) continue;
-            const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-            const span = document.createElement("span");
-            span.textContent = item.str;
-            span.style.left = `${tx[4]}px`;
-            span.style.top = `${tx[5] - item.height * zoom * 1.5}px`;
-            span.style.fontSize = `${item.height * zoom * 1.5}px`;
-            span.style.fontFamily = "sans-serif";
-            span.style.position = "absolute";
-            span.style.whiteSpace = "pre";
-            span.style.color = "transparent";
-            span.style.pointerEvents = "none";
-            textLayerRef.current.appendChild(span);
+          try {
+            const textContent = await page.getTextContent();
+            for (const item of textContent.items as any[]) {
+              if (!item.str) continue;
+              const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+              const span = document.createElement("span");
+              span.textContent = item.str;
+              span.style.left = `${tx[4]}px`;
+              span.style.top = `${tx[5] - item.height * scale}px`;
+              span.style.fontSize = `${item.height * scale}px`;
+              span.style.fontFamily = "sans-serif";
+              span.style.position = "absolute";
+              span.style.whiteSpace = "pre";
+              span.style.color = "transparent";
+              span.style.pointerEvents = "none";
+              textLayerRef.current.appendChild(span);
+            }
+          } catch {
+            // Text content extraction failed, not critical
           }
         }
-      } catch (err: any) {
-        if (err?.name !== "RenderingCancelledException") {
+      } catch (err) {
+        if (!cancelled) {
           console.error("Render error:", err);
         }
-      } finally {
-        setIsRendering(false);
       }
     };
 
     renderPage();
-    return () => { cancelled = true; };
-  }, [pdfDoc, currentPage, zoom]);
+
+    return () => {
+      cancelled = true;
+    };
+  }, [currentPage, zoom]);
 
   const getCanvasCoords = useCallback(
     (e: React.MouseEvent): { x: number; y: number } => {
@@ -216,18 +234,6 @@ export function PdfViewer({
       ref={containerRef}
       className="pdf-viewer"
       style={{ cursor: getCursor() }}
-      onScroll={(e) => {
-        const target = e.target as HTMLDivElement;
-        const scrollTop = target.scrollTop;
-        const scrollHeight = target.scrollHeight - target.clientHeight;
-        if (scrollHeight > 0) {
-          const progress = scrollTop / scrollHeight;
-          const newPage = Math.min(Math.max(Math.ceil(progress * pageCount), 1), pageCount);
-          if (newPage !== currentPage) {
-            onPageChange(newPage);
-          }
-        }
-      }}
     >
       <div className="pdf-page-container">
         <canvas
