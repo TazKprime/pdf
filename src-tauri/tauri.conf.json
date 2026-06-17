@@ -17,11 +17,12 @@
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
-        "center": true
+        "center": true,
+        "devtools": true
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; connect-src 'self' ipc: http://ipc.localhost https://*.tauri.localhost; img-src 'self' blob: data:; worker-src 'self' blob: 'unsafe-eval'; font-src 'self' data:"
+      "csp": null
     }
   },
   "bundle": {

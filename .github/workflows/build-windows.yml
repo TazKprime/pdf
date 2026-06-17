@@ -27,18 +27,42 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Build frontend
+        run: npx vite build
+
+      - name: Verify frontend build output
+        shell: bash
+        run: |
+          echo "=== dist/ contents ==="
+          ls -la dist/
+          echo ""
+          echo "=== dist/index.html ==="
+          cat dist/index.html
+          echo ""
+          echo "=== Does index.html reference bundle? ==="
+          grep -o 'src="[^"]*"' dist/index.html || echo "NO SCRIPT TAGS FOUND"
+
       - name: Build Tauri app
         run: npx tauri build --target x86_64-pc-windows-msvc
         env:
           TAURI_SIGNING_PRIVATE_KEY: ""
 
-      - name: Find portable exe
-        id: find_exe
+      - name: Verify resource bundle
         shell: bash
         run: |
-          find src-tauri/target -name "*.exe" -path "*/release/bundle/*" 2>/dev/null | head -20
-          # Also check for NSIS portable
-          find src-tauri/target -name "*.exe" -not -path "*/deps/*" 2>/dev/null | head -20
+          echo "=== Looking for bundled index.html ==="
+          find src-tauri/target -name "index.html" 2>/dev/null
+          echo ""
+          echo "=== NSIS output ==="
+          find src-tauri/target -name "*.exe" -path "*/bundle/*" 2>/dev/null
+          echo ""
+          echo "=== Release binary ==="
+          ls -la src-tauri/target/x86_64-pc-windows-msvc/release/pdf-editor.exe 2>/dev/null || echo "not found"
+          echo ""
+          echo "=== Resources dir ==="
+          find src-tauri/target -path "*/release/bundle/nsis" -type d 2>/dev/null
+          find src-tauri/target -name "pdf-editor_*.nsis.zip" 2>/dev/null
+          find src-tauri/target -name "pdf-editor_*.nsis.exe" 2>/dev/null
 
       - name: Upload NSIS Installer
         uses: actions/upload-artifact@v4
