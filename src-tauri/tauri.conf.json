@@ -42,15 +42,5 @@
       }
     }
   },
-  "plugins": {
-    "dialog": {
-      "all": true
-    },
-    "fs": {
-      "scope": {
-        "allow": ["**"],
-        "deny": []
-      }
-    }
-  }
+  "plugins": {}
 }
