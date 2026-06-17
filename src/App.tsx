@@ -377,6 +377,7 @@ function App() {
               pageCount={pageCount}
               onPageChange={setCurrentPage}
               onAnnotation={handleAnnotation}
+              onStatus={logDebug}
             />
           ) : (
             <WelcomeScreen onOpen={handleOpen} />

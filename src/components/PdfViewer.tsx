@@ -19,6 +19,7 @@ interface PdfViewerProps {
     w: number;
     h: number;
   }) => void;
+  onStatus?: (msg: string) => void;
 }
 
 interface SelectionRect {
@@ -36,6 +37,7 @@ export function PdfViewer({
   pageCount,
   onPageChange,
   onAnnotation,
+  onStatus,
 }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
@@ -50,13 +52,16 @@ export function PdfViewer({
 
     const loadDoc = async () => {
       try {
+        onStatus?.("pdf.js: loading document...");
         const data = pdfData.slice(0);
         const doc = await pdfjsLib.getDocument({ data }).promise;
         if (!cancelled) {
           pdfDocRef.current = doc;
+          onStatus?.(`pdf.js: doc loaded, ${doc.numPages} pages`);
           setDocReady(true);
         }
       } catch (err) {
+        onStatus?.(`pdf.js LOAD ERROR: ${err}`);
         console.error("PDF load error:", err);
       }
     };
@@ -75,11 +80,12 @@ export function PdfViewer({
 
     const renderPage = async () => {
       try {
+        onStatus?.(`pdf.js: rendering page ${currentPage} at zoom ${zoom}...`);
         const page = await doc.getPage(currentPage);
         if (cancelled) return;
 
         const ctx = canvas.getContext("2d");
-        if (!ctx) return;
+        if (!ctx) { onStatus?.("pdf.js: no 2d context"); return; }
 
         const scale = zoom * 1.5;
         const viewport = page.getViewport({ scale });
@@ -93,6 +99,7 @@ export function PdfViewer({
         await renderTask.promise;
 
         if (cancelled) return;
+        onStatus?.(`pdf.js: page ${currentPage} rendered OK (${viewport.width}x${viewport.height})`);
 
         if (textLayerRef.current) {
           textLayerRef.current.innerHTML = "";
@@ -119,7 +126,10 @@ export function PdfViewer({
           } catch { /* text extraction not critical */ }
         }
       } catch (err) {
-        if (!cancelled) console.error("Render error:", err);
+        if (!cancelled) {
+          onStatus?.(`pdf.js RENDER ERROR: ${err}`);
+          console.error("Render error:", err);
+        }
       }
     };
 
