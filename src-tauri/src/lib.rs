@@ -70,38 +70,23 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .setup(|app| {
+            log("setup: app created");
+
             let resource_dir = app.path().resource_dir().ok();
             log(&format!("resource_dir: {:?}", resource_dir));
 
             if let Some(ref rd) = resource_dir {
                 let index = rd.join("index.html");
                 log(&format!("index.html exists: {}", index.exists()));
-                log(&format!("index.html path: {}", index.display()));
-
-                if index.exists() {
-                    match fs::read_to_string(&index) {
-                        Ok(content) => {
-                            log(&format!("index.html length: {} bytes", content.len()));
-                            log(&format!("index.html first 200 chars: {}", &content[..content.len().min(200)]));
-                        }
-                        Err(e) => log(&format!("Failed to read index.html: {}", e)),
-                    }
-                } else {
-                    log("WARNING: index.html NOT FOUND in resource dir!");
-                    log(&format!("Contents of resource dir:"));
-                    if let Ok(entries) = fs::read_dir(rd) {
-                        for entry in entries.flatten() {
-                            log(&format!("  - {}", entry.path().display()));
-                            if entry.path().is_dir() {
-                                if let Ok(sub) = fs::read_dir(entry.path()) {
-                                    for sub_entry in sub.flatten() {
-                                        log(&format!("    - {}", sub_entry.path().display()));
-                                    }
-                                }
-                            }
-                        }
-                    }
+                if !index.exists() {
+                    log("NOTE: index.html not on disk - frontend is embedded in binary");
                 }
+            }
+
+            if let Some(_webview) = app.get_webview_window("main") {
+                log("main window found");
+            } else {
+                log("WARNING: main window NOT found");
             }
 
             log("setup complete");

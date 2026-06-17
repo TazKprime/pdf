@@ -40,21 +40,24 @@ export function PdfViewer({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
-  const renderIdRef = useRef(0);
   const [selection, setSelection] = useState<SelectionRect | null>(null);
+  const [docReady, setDocReady] = useState(false);
   const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setDocReady(false);
+
     const loadDoc = async () => {
       try {
         const data = pdfData.slice(0);
         const doc = await pdfjsLib.getDocument({ data }).promise;
         if (!cancelled) {
           pdfDocRef.current = doc;
+          setDocReady(true);
         }
       } catch (err) {
-        console.error("Failed to load PDF document:", err);
+        console.error("PDF load error:", err);
       }
     };
     loadDoc();
@@ -62,17 +65,18 @@ export function PdfViewer({
   }, [pdfData]);
 
   useEffect(() => {
+    if (!docReady) return;
+
     const doc = pdfDocRef.current;
     const canvas = canvasRef.current;
     if (!doc || !canvas) return;
 
-    const renderId = ++renderIdRef.current;
     let cancelled = false;
 
     const renderPage = async () => {
       try {
         const page = await doc.getPage(currentPage);
-        if (cancelled || renderId !== renderIdRef.current) return;
+        if (cancelled) return;
 
         const ctx = canvas.getContext("2d");
         if (!ctx) return;
@@ -88,7 +92,7 @@ export function PdfViewer({
         const renderTask = page.render({ canvasContext: ctx, viewport });
         await renderTask.promise;
 
-        if (cancelled || renderId !== renderIdRef.current) return;
+        if (cancelled) return;
 
         if (textLayerRef.current) {
           textLayerRef.current.innerHTML = "";
@@ -112,23 +116,16 @@ export function PdfViewer({
               span.style.pointerEvents = "none";
               textLayerRef.current.appendChild(span);
             }
-          } catch {
-            // Text content extraction failed, not critical
-          }
+          } catch { /* text extraction not critical */ }
         }
       } catch (err) {
-        if (!cancelled) {
-          console.error("Render error:", err);
-        }
+        if (!cancelled) console.error("Render error:", err);
       }
     };
 
     renderPage();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [currentPage, zoom]);
+    return () => { cancelled = true; };
+  }, [docReady, currentPage, zoom]);
 
   const getCanvasCoords = useCallback(
     (e: React.MouseEvent): { x: number; y: number } => {
@@ -215,26 +212,18 @@ export function PdfViewer({
 
   const getCursor = () => {
     switch (toolMode) {
-      case "pan":
-        return "grab";
+      case "pan": return "grab";
       case "highlight":
       case "text":
       case "draw":
-      case "redact":
-        return "crosshair";
-      case "eraser":
-        return "cell";
-      default:
-        return "default";
+      case "redact": return "crosshair";
+      case "eraser": return "cell";
+      default: return "default";
     }
   };
 
   return (
-    <div
-      ref={containerRef}
-      className="pdf-viewer"
-      style={{ cursor: getCursor() }}
-    >
+    <div ref={containerRef} className="pdf-viewer" style={{ cursor: getCursor() }}>
       <div className="pdf-page-container">
         <canvas
           ref={canvasRef}
