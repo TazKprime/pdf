@@ -54,21 +54,30 @@ function App() {
   const [showSidebar, setShowSidebar] = useState(true);
   const [bookmarks, setBookmarks] = useState<{ title: string; page: number }[]>([]);
   const [tauriReady, setTauriReady] = useState(false);
+  const [debugMsg, setDebugMsg] = useState("initializing...");
+
+  const logDebug = useCallback((msg: string) => {
+    console.log(`[PDF-DEBUG] ${msg}`);
+    setDebugMsg(msg);
+  }, []);
 
   useEffect(() => {
     loadTauriModules().then(() => setTauriReady(true));
   }, []);
 
   const updatePdfData = useCallback(async (data: Uint8Array) => {
+    logDebug(`updatePdfData: ${data.length} bytes`);
     setPdfData(data);
     setIsModified(true);
     const count = await getPdfPageCount(data);
     setPageCount(count);
     const meta = await getPdfMetadata(data);
     setPdfMeta(meta);
-  }, []);
+    logDebug(`updatePdfData done: ${count} pages, title="${meta.title}"`);
+  }, [logDebug]);
 
   const loadPdfFromData = useCallback(async (data: Uint8Array, name: string) => {
+    logDebug(`loadPdfFromData: name="${name}", ${data.length} bytes, first4=[${data[0]},${data[1]},${data[2]},${data[3]}]`);
     setPdfData(data);
     setFileName(name);
     const count = await getPdfPageCount(data);
@@ -77,22 +86,39 @@ function App() {
     setPdfMeta(meta);
     setCurrentPage(1);
     setIsModified(false);
-  }, []);
+    logDebug(`loaded: ${count} pages`);
+  }, [logDebug]);
 
   const loadPdf = useCallback(async (path: string) => {
-    if (!fsModule) return;
     setIsLoading(true);
+    logDebug(`loadPdf: path="${path}"`);
     try {
-      const data = await fsModule.readFile(path);
+      let data: Uint8Array;
+      if (coreModule) {
+        logDebug("reading via Rust invoke...");
+        const b64: string = await coreModule.invoke("read_file_as_base64", { filePath: path });
+        logDebug(`got base64: ${b64.length} chars`);
+        const binary = atob(b64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        data = bytes;
+        logDebug(`decoded: ${data.length} bytes`);
+      } else if (fsModule) {
+        data = await fsModule.readFile(path);
+      } else {
+        logDebug("no Tauri modules available");
+        return;
+      }
       const name = path.split(/[\\/]/).pop() || "Untitled.pdf";
       setFilePath(path);
       await loadPdfFromData(data, name);
     } catch (err) {
+      logDebug(`ERROR: ${err}`);
       console.error("Failed to load PDF:", err);
     } finally {
       setIsLoading(false);
     }
-  }, [loadPdfFromData]);
+  }, [loadPdfFromData, logDebug]);
 
   const handleOpen = useCallback(async () => {
     if (dialogModule) {
@@ -336,6 +362,12 @@ function App() {
           </Sidebar>
         )}
         <div className="viewer-container">
+          <div style={{
+            background: "#11111b", color: "#6c7086", fontSize: 11,
+            fontFamily: "monospace", padding: "2px 8px", borderBottom: "1px solid #45475a",
+          }}>
+            {debugMsg}
+          </div>
           {pdfData ? (
             <PdfViewer
               pdfData={pdfData}
