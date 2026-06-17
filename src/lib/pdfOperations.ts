@@ -1,4 +1,4 @@
-import { PDFDocument, PDFPage, degrees, rgb } from "pdf-lib";
+import { PDFDocument, PDFPage, degrees, rgb, StandardFonts } from "pdf-lib";
 
 export interface PdfMetadata {
   title: string;
@@ -189,6 +189,48 @@ export async function drawLine(
     thickness,
     color: rgb(color[0], color[1], color[2]),
   });
+  return doc.save();
+}
+
+export async function addText(
+  data: Uint8Array,
+  pageIndex: number,
+  x: number,
+  y: number,
+  text: string,
+  fontSize: number = 14,
+  color: [number, number, number] = [0, 0, 0]
+): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(data);
+  const page = doc.getPage(pageIndex);
+  const font = await doc.embedFont(StandardFonts.Helvetica);
+  page.drawText(text, {
+    x,
+    y,
+    size: fontSize,
+    font,
+    color: rgb(color[0], color[1], color[2]),
+  });
+  return doc.save();
+}
+
+export async function drawFreehand(
+  data: Uint8Array,
+  pageIndex: number,
+  points: { x: number; y: number }[],
+  thickness: number = 2,
+  color: [number, number, number] = [0.85, 0.55, 0.66]
+): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(data);
+  const page = doc.getPage(pageIndex);
+  for (let i = 0; i < points.length - 1; i++) {
+    page.drawLine({
+      start: { x: points[i].x, y: points[i].y },
+      end: { x: points[i + 1].x, y: points[i + 1].y },
+      thickness,
+      color: rgb(color[0], color[1], color[2]),
+    });
+  }
   return doc.save();
 }
 

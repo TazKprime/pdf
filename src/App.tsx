@@ -146,9 +146,14 @@ function App() {
   }, [loadPdf, loadPdfFromData]);
 
   const handleSave = useCallback(async () => {
-    if (!filePath || !pdfData || !fsModule) return;
+    if (!filePath || !pdfData) return;
     try {
-      await fsModule.writeFile(filePath, pdfData);
+      if (coreModule) {
+        const b64 = btoa(String.fromCharCode(...pdfData));
+        await coreModule.invoke("write_file_from_base64", { base64Data: b64, outputPath: filePath });
+      } else if (fsModule) {
+        await fsModule.writeFile(filePath, pdfData);
+      }
       setIsModified(false);
     } catch (err) {
       console.error("Failed to save:", err);
@@ -162,9 +167,14 @@ function App() {
         filters: [{ name: "PDF", extensions: ["pdf"] }],
         defaultPath: fileName,
       });
-      if (savePath && fsModule) {
+      if (savePath) {
         try {
-          await fsModule.writeFile(savePath, pdfData);
+          if (coreModule) {
+            const b64 = btoa(String.fromCharCode(...pdfData));
+            await coreModule.invoke("write_file_from_base64", { base64Data: b64, outputPath: savePath });
+          } else if (fsModule) {
+            await fsModule.writeFile(savePath, pdfData);
+          }
           setFilePath(savePath);
           setFileName(savePath.split(/[\\/]/).pop() || "Untitled.pdf");
           setIsModified(false);
@@ -173,7 +183,6 @@ function App() {
         }
       }
     } else {
-      // Fallback: download
       const blob = new Blob([pdfData as BlobPart], { type: "application/pdf" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -183,7 +192,7 @@ function App() {
       URL.revokeObjectURL(url);
       setIsModified(false);
     }
-  }, [pdfData, fileName, filePath]);
+  }, [pdfData, fileName]);
 
   const handleRotatePage = useCallback(async (pageIndex: number, degrees: number) => {
     if (!pdfData) return;
@@ -258,6 +267,8 @@ function App() {
     y: number;
     w: number;
     h: number;
+    text?: string;
+    points?: { x: number; y: number }[];
   }) => {
     if (!pdfData) return;
     try {
@@ -269,6 +280,15 @@ function App() {
           break;
         case "highlight":
           data = await ops.drawHighlight(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
+          break;
+        case "text":
+          data = await ops.addText(pdfData, ann.pageIndex, ann.x, ann.y, ann.text || "");
+          break;
+        case "draw":
+          data = await ops.drawFreehand(pdfData, ann.pageIndex, ann.points || []);
+          break;
+        case "eraser":
+          data = await ops.drawFreehand(pdfData, ann.pageIndex, ann.points || [], 20, [1, 1, 1]);
           break;
         default:
           return;
@@ -377,7 +397,6 @@ function App() {
               pageCount={pageCount}
               onPageChange={setCurrentPage}
               onAnnotation={handleAnnotation}
-              onStatus={logDebug}
             />
           ) : (
             <WelcomeScreen onOpen={handleOpen} />

@@ -19,8 +19,9 @@ interface PdfViewerProps {
     y: number;
     w: number;
     h: number;
+    text?: string;
+    points?: { x: number; y: number }[];
   }) => void;
-  onStatus?: (msg: string) => void;
 }
 
 interface SelectionRect {
@@ -28,6 +29,11 @@ interface SelectionRect {
   startY: number;
   endX: number;
   endY: number;
+}
+
+interface DrawPoint {
+  x: number;
+  y: number;
 }
 
 export function PdfViewer({
@@ -38,39 +44,26 @@ export function PdfViewer({
   pageCount,
   onPageChange,
   onAnnotation,
-  onStatus,
 }: PdfViewerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [selection, setSelection] = useState<SelectionRect | null>(null);
-  const [debugLines, setDebugLines] = useState<string[]>([]);
+  const [drawPoints, setDrawPoints] = useState<DrawPoint[]>([]);
+  const isDrawingRef = useRef(false);
   const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
-
-  const addDebug = useCallback((msg: string) => {
-    setDebugLines((prev) => [...prev, `${new Date().toISOString().slice(11, 23)} ${msg}`]);
-    onStatus?.(msg);
-  }, [onStatus]);
-
-  useEffect(() => {
-    addDebug(`MOUNTED pdfData=${pdfData?.length ?? "null"} bytes`);
-  }, []);
+  const [canvasSize, setCanvasSize] = useState({ w: 0, h: 0 });
 
   useEffect(() => {
     let cancelled = false;
     const loadDoc = async () => {
       try {
-        addDebug(`pdf.js getDocument START (${pdfData.length} bytes)`);
         const data = pdfData.slice(0);
         const doc = await pdfjsLib.getDocument({ data }).promise;
-        if (!cancelled) {
-          pdfDocRef.current = doc;
-          addDebug(`pdf.js getDocument OK numPages=${doc.numPages}`);
-        } else {
-          addDebug("pdf.js load CANCELLED");
-        }
-      } catch (err: any) {
-        addDebug(`pdf.js LOAD FAILED: ${err?.message || err}`);
+        if (!cancelled) pdfDocRef.current = doc;
+      } catch (err) {
+        console.error("PDF load error:", err);
       }
     };
     loadDoc();
@@ -80,37 +73,50 @@ export function PdfViewer({
   useEffect(() => {
     const doc = pdfDocRef.current;
     const canvas = canvasRef.current;
-    if (!doc || !canvas) {
-      addDebug(`RENDER SKIPPED doc=${!!doc} canvas=${!!canvas}`);
-      return;
-    }
+    if (!doc || !canvas) return;
 
     let cancelled = false;
 
     const renderPage = async () => {
       try {
-        addDebug(`renderPage START page=${currentPage} zoom=${zoom}`);
         const page = await doc.getPage(currentPage);
         if (cancelled) return;
-
         const ctx = canvas.getContext("2d");
-        if (!ctx) { addDebug("no 2d context"); return; }
-
+        if (!ctx) return;
         const scale = zoom * 1.5;
         const viewport = page.getViewport({ scale });
-
         canvas.width = viewport.width;
         canvas.height = viewport.height;
+        setCanvasSize({ w: viewport.width, h: viewport.height });
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        addDebug(`canvas ${viewport.width}x${viewport.height}, calling render()...`);
         const renderTask = page.render({ canvasContext: ctx, viewport });
         await renderTask.promise;
-
         if (cancelled) return;
-        addDebug(`render DONE`);
+        if (textLayerRef.current) {
+          textLayerRef.current.innerHTML = "";
+          textLayerRef.current.style.width = `${viewport.width}px`;
+          textLayerRef.current.style.height = `${viewport.height}px`;
+          try {
+            const textContent = await page.getTextContent();
+            for (const item of textContent.items as any[]) {
+              if (!item.str) continue;
+              const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+              const span = document.createElement("span");
+              span.textContent = item.str;
+              span.style.left = `${tx[4]}px`;
+              span.style.top = `${tx[5] - item.height * scale}px`;
+              span.style.fontSize = `${item.height * scale}px`;
+              span.style.fontFamily = "sans-serif";
+              span.style.position = "absolute";
+              span.style.whiteSpace = "pre";
+              span.style.color = "transparent";
+              span.style.pointerEvents = "none";
+              textLayerRef.current.appendChild(span);
+            }
+          } catch { /* text extraction not critical */ }
+        }
       } catch (err: any) {
-        if (!cancelled) addDebug(`RENDER FAILED: ${err?.message || err}`);
+        console.error("Render error:", err);
       }
     };
 
@@ -118,48 +124,147 @@ export function PdfViewer({
     return () => { cancelled = true; };
   }, [currentPage, zoom]);
 
-  const getCanvasCoords = useCallback(
-    (e: React.MouseEvent): { x: number; y: number } => {
-      const canvas = canvasRef.current!;
-      const rect = canvas.getBoundingClientRect();
-      return {
-        x: (e.clientX - rect.left) * (canvas.width / rect.width),
-        y: (e.clientY - rect.top) * (canvas.height / rect.height),
-      };
-    },
-    []
-  );
+  const drawOverlay = useCallback(() => {
+    const overlay = overlayCanvasRef.current;
+    if (!overlay) return;
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+    if (selection) {
+      const x = Math.min(selection.startX, selection.endX);
+      const y = Math.min(selection.startY, selection.endY);
+      const w = Math.abs(selection.endX - selection.startX);
+      const h = Math.abs(selection.endY - selection.startY);
+      ctx.fillStyle = toolMode === "redact" ? "rgba(0,0,0,0.8)" : "rgba(255,235,59,0.35)";
+      ctx.fillRect(x, y, w, h);
+      ctx.strokeStyle = toolMode === "redact" ? "#000" : "#ffeb3b";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+    }
+
+    if (drawPoints.length > 1) {
+      ctx.beginPath();
+      ctx.moveTo(drawPoints[0].x, drawPoints[0].y);
+      for (let i = 1; i < drawPoints.length; i++) {
+        ctx.lineTo(drawPoints[i].x, drawPoints[i].y);
+      }
+      ctx.strokeStyle = toolMode === "eraser" ? "#fff" : "#f38ba8";
+      ctx.lineWidth = toolMode === "eraser" ? 20 : 3;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.stroke();
+    }
+  }, [selection, drawPoints, toolMode]);
+
+  useEffect(() => {
+    drawOverlay();
+  }, [drawOverlay]);
+
+  useEffect(() => {
+    const overlay = overlayCanvasRef.current;
+    const canvas = canvasRef.current;
+    if (overlay && canvas) {
+      overlay.width = canvas.width;
+      overlay.height = canvas.height;
+    }
+  }, [canvasSize]);
+
+  const getCanvasCoords = useCallback((e: React.MouseEvent): { x: number; y: number } => {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (canvas.width / rect.width),
+      y: (e.clientY - rect.top) * (canvas.height / rect.height),
+    };
+  }, []);
+
+  const isDrawTool = toolMode === "draw" || toolMode === "eraser";
+  const isAnnotateTool = toolMode === "highlight" || toolMode === "redact" || toolMode === "text";
 
   const handleCanvasMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (toolMode === "select" || toolMode === "pan" || toolMode === "eraser") return;
+      if (toolMode === "select" || toolMode === "pan") return;
       const coords = getCanvasCoords(e);
-      setSelection({ startX: coords.x, startY: coords.y, endX: coords.x, endY: coords.y });
+
+      if (isDrawTool) {
+        isDrawingRef.current = true;
+        setDrawPoints([coords]);
+        return;
+      }
+
+      if (isAnnotateTool) {
+        setSelection({ startX: coords.x, startY: coords.y, endX: coords.x, endY: coords.y });
+      }
     },
-    [toolMode, getCanvasCoords]
+    [toolMode, getCanvasCoords, isDrawTool, isAnnotateTool]
   );
 
   const handleCanvasMouseMove = useCallback(
     (e: React.MouseEvent) => {
-      if (!selection) return;
       const coords = getCanvasCoords(e);
-      setSelection((prev) => prev ? { ...prev, endX: coords.x, endY: coords.y } : null);
+
+      if (isDrawTool && isDrawingRef.current) {
+        setDrawPoints((prev) => [...prev, coords]);
+        return;
+      }
+
+      if (selection) {
+        setSelection((prev) => prev ? { ...prev, endX: coords.x, endY: coords.y } : null);
+      }
     },
-    [selection, getCanvasCoords]
+    [getCanvasCoords, isDrawTool, selection]
   );
 
   const handleCanvasMouseUp = useCallback(() => {
+    if (isDrawTool && isDrawingRef.current && drawPoints.length > 1) {
+      isDrawingRef.current = false;
+      const scale = zoom * 1.5;
+      const pageWidth = canvasSize.w / scale;
+      const pageHeight = canvasSize.h / scale;
+
+      const pagePoints = drawPoints.map((p) => ({
+        x: p.x / scale,
+        y: pageHeight - p.y / scale,
+      }));
+
+      onAnnotation({
+        type: toolMode,
+        pageIndex: currentPage - 1,
+        x: 0, y: 0, w: 0, h: 0,
+        points: pagePoints,
+      });
+      setDrawPoints([]);
+      return;
+    }
+
+    isDrawingRef.current = false;
+
     if (!selection) return;
-    const viewportScale = 1 / 1.5;
-    const x = Math.min(selection.startX, selection.endX) * viewportScale;
-    const y = Math.min(selection.startY, selection.endY) * viewportScale;
-    const w = Math.abs(selection.endX - selection.startX) * viewportScale;
-    const h = Math.abs(selection.endY - selection.startY) * viewportScale;
-    if (w > 5 && h > 5) {
-      onAnnotation({ type: toolMode, pageIndex: currentPage - 1, x, y: canvasRef.current!.height * viewportScale - y - h, w, h });
+    const scale = zoom * 1.5;
+    const pageWidth = canvasSize.w / scale;
+    const pageHeight = canvasSize.h / scale;
+
+    const selX = Math.min(selection.startX, selection.endX);
+    const selY = Math.min(selection.startY, selection.endY);
+    const selW = Math.abs(selection.endX - selection.startX);
+    const selH = Math.abs(selection.endY - selection.startY);
+
+    const pageX = selX / scale;
+    const pageY = pageHeight - (selY / scale) - (selH / scale);
+
+    if (selW > 5 && selH > 5) {
+      if (toolMode === "text") {
+        const text = prompt("Enter text:");
+        if (text) {
+          onAnnotation({ type: "text", pageIndex: currentPage - 1, x: pageX, y: pageY, w: selW, h: selH, text });
+        }
+      } else {
+        onAnnotation({ type: toolMode, pageIndex: currentPage - 1, x: pageX, y: pageY, w: selW, h: selH });
+      }
     }
     setSelection(null);
-  }, [selection, toolMode, currentPage, onAnnotation]);
+  }, [selection, toolMode, currentPage, onAnnotation, zoom, canvasSize, isDrawTool, drawPoints]);
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -176,39 +281,33 @@ export function PdfViewer({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleKeyDown]);
 
+  const getCursor = () => {
+    switch (toolMode) {
+      case "pan": return "grab";
+      case "select": return "default";
+      default: return "crosshair";
+    }
+  };
+
   return (
-    <div ref={containerRef} className="pdf-viewer" style={{ cursor: toolMode === "pan" ? "grab" : toolMode === "select" ? "default" : "crosshair" }}>
-      <div style={{
-        position: "absolute", top: 0, right: 0, zIndex: 9999,
-        background: "rgba(0,0,0,0.85)", color: "#0f0", fontFamily: "monospace",
-        fontSize: 10, padding: 6, maxWidth: 400, maxHeight: 200, overflow: "auto",
-        whiteSpace: "pre-wrap", wordBreak: "break-all", borderRadius: "0 0 0 6px",
-      }}>
-        {debugLines.length === 0 ? "waiting..." : debugLines.map((l, i) => <div key={i}>{l}</div>)}
-      </div>
-      <div className="pdf-page-container">
+    <div ref={containerRef} className="pdf-viewer" style={{ cursor: getCursor() }}>
+      <div className="pdf-page-container" style={{ position: "relative" }}>
+        <canvas ref={canvasRef} />
         <canvas
-          ref={canvasRef}
+          ref={overlayCanvasRef}
+          style={{ position: "absolute", top: 0, left: 0, pointerEvents: "auto" }}
           onMouseDown={handleCanvasMouseDown}
           onMouseMove={handleCanvasMouseMove}
           onMouseUp={handleCanvasMouseUp}
-          onMouseLeave={() => selection && setSelection(null)}
+          onMouseLeave={() => {
+            if (isDrawTool && isDrawingRef.current) {
+              isDrawingRef.current = false;
+              setDrawPoints([]);
+            }
+            setSelection(null);
+          }}
         />
         <div ref={textLayerRef} className="text-layer" />
-        {selection && (
-          <div
-            style={{
-              position: "absolute",
-              left: Math.min(selection.startX, selection.endX),
-              top: Math.min(selection.startY, selection.endY),
-              width: Math.abs(selection.endX - selection.startX),
-              height: Math.abs(selection.endY - selection.startY),
-              backgroundColor: toolMode === "redact" ? "#000" : "#ffeb3b88",
-              border: `1px solid ${toolMode === "redact" ? "#000" : "#ffeb3b"}`,
-              pointerEvents: "none",
-            }}
-          />
-        )}
       </div>
     </div>
   );
