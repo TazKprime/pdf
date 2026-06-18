@@ -8,6 +8,10 @@ import {
   extractPages,
   setPdfMetadata as updateMetadata,
   duplicatePage,
+  drawRedaction,
+  drawHighlight,
+  addText,
+  drawFreehand,
   PdfMetadata,
 } from "./lib/pdfOperations";
 import { PdfToolbar } from "./components/PdfToolbar";
@@ -272,23 +276,22 @@ function App() {
   }) => {
     if (!pdfData) return;
     try {
-      const ops = await import("./lib/pdfOperations");
       let data: Uint8Array;
       switch (ann.type) {
         case "redact":
-          data = await ops.drawRedaction(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
+          data = await drawRedaction(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
           break;
         case "highlight":
-          data = await ops.drawHighlight(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
+          data = await drawHighlight(pdfData, ann.pageIndex, ann.x, ann.y, ann.w, ann.h);
           break;
         case "text":
-          data = await ops.addText(pdfData, ann.pageIndex, ann.x, ann.y, ann.text || "");
+          data = await addText(pdfData, ann.pageIndex, ann.x, ann.y, ann.text || "");
           break;
         case "draw":
-          data = await ops.drawFreehand(pdfData, ann.pageIndex, ann.points || []);
+          data = await drawFreehand(pdfData, ann.pageIndex, ann.points || []);
           break;
         case "eraser":
-          data = await ops.drawFreehand(pdfData, ann.pageIndex, ann.points || [], 20, [1, 1, 1]);
+          data = await drawFreehand(pdfData, ann.pageIndex, ann.points || [], 20, [1, 1, 1]);
           break;
         default:
           return;
