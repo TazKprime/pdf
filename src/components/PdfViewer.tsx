@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useRef, useCallback } from "react";
 import * as pdfjsLib from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
 import { ToolMode } from "../App";
@@ -50,93 +50,93 @@ export function PdfViewer({
   const pdfDocRef = useRef<pdfjsLib.PDFDocumentProxy | null>(null);
   const viewportScaleRef = useRef(1.5);
   const canvasSizeRef = useRef({ w: 0, h: 0 });
+  const panStartRef = useRef<{ x: number; y: number; scrollX: number; scrollY: number } | null>(null);
+
   const toolModeRef = useRef(toolMode);
   const currentPageRef = useRef(currentPage);
   const onAnnotationRef = useRef(onAnnotation);
   const zoomRef = useRef(zoom);
-  const rerenderRef = useRef(0);
-  const [, forceUpdate] = useState(0);
+  const pdfDataRef = useRef(pdfData);
 
   toolModeRef.current = toolMode;
   currentPageRef.current = currentPage;
   onAnnotationRef.current = onAnnotation;
   zoomRef.current = zoom;
+  pdfDataRef.current = pdfData;
 
+  const renderPage = useCallback(async () => {
+    const doc = pdfDocRef.current;
+    const canvas = canvasRef.current;
+    if (!doc || !canvas) return;
+
+    try {
+      const page = await doc.getPage(currentPageRef.current);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+      const scale = zoomRef.current * 1.5;
+      viewportScaleRef.current = scale;
+      const viewport = page.getViewport({ scale });
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+      canvasSizeRef.current = { w: viewport.width, h: viewport.height };
+
+      const overlay = overlayCanvasRef.current;
+      if (overlay) { overlay.width = viewport.width; overlay.height = viewport.height; }
+
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      await page.render({ canvasContext: ctx, viewport }).promise;
+
+      if (textLayerRef.current) {
+        textLayerRef.current.innerHTML = "";
+        textLayerRef.current.style.width = `${viewport.width}px`;
+        textLayerRef.current.style.height = `${viewport.height}px`;
+        try {
+          const textContent = await page.getTextContent();
+          for (const item of textContent.items as any[]) {
+            if (!item.str) continue;
+            const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
+            const span = document.createElement("span");
+            span.textContent = item.str;
+            span.style.left = `${tx[4]}px`;
+            span.style.top = `${tx[5] - item.height * scale}px`;
+            span.style.fontSize = `${item.height * scale}px`;
+            span.style.fontFamily = "sans-serif";
+            span.style.position = "absolute";
+            span.style.whiteSpace = "pre";
+            span.style.color = "transparent";
+            span.style.pointerEvents = "none";
+            textLayerRef.current.appendChild(span);
+          }
+        } catch { /* text extraction not critical */ }
+      }
+    } catch (err: any) {
+      console.error("Render error:", err);
+    }
+  }, []);
+
+  // Load document when pdfData changes
   useEffect(() => {
     let cancelled = false;
     const loadDoc = async () => {
       try {
         const data = pdfData.slice(0);
         const doc = await pdfjsLib.getDocument({ data }).promise;
-        if (!cancelled) pdfDocRef.current = doc;
+        if (!cancelled) {
+          pdfDocRef.current = doc;
+          renderPage();
+        }
       } catch (err) {
         console.error("PDF load error:", err);
       }
     };
     loadDoc();
     return () => { cancelled = true; };
-  }, [pdfData]);
+  }, [pdfData, renderPage]);
 
+  // Re-render when currentPage or zoom changes
   useEffect(() => {
-    const doc = pdfDocRef.current;
-    const canvas = canvasRef.current;
-    if (!doc || !canvas) return;
-
-    let cancelled = false;
-
-    const renderPage = async () => {
-      try {
-        const page = await doc.getPage(currentPage);
-        if (cancelled) return;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-        const scale = zoom * 1.5;
-        viewportScaleRef.current = scale;
-        const viewport = page.getViewport({ scale });
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        canvasSizeRef.current = { w: viewport.width, h: viewport.height };
-
-        const overlay = overlayCanvasRef.current;
-        if (overlay) { overlay.width = viewport.width; overlay.height = viewport.height; }
-
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        const renderTask = page.render({ canvasContext: ctx, viewport });
-        await renderTask.promise;
-
-        if (cancelled) return;
-
-        if (textLayerRef.current) {
-          textLayerRef.current.innerHTML = "";
-          textLayerRef.current.style.width = `${viewport.width}px`;
-          textLayerRef.current.style.height = `${viewport.height}px`;
-          try {
-            const textContent = await page.getTextContent();
-            for (const item of textContent.items as any[]) {
-              if (!item.str) continue;
-              const tx = pdfjsLib.Util.transform(viewport.transform, item.transform);
-              const span = document.createElement("span");
-              span.textContent = item.str;
-              span.style.left = `${tx[4]}px`;
-              span.style.top = `${tx[5] - item.height * scale}px`;
-              span.style.fontSize = `${item.height * scale}px`;
-              span.style.fontFamily = "sans-serif";
-              span.style.position = "absolute";
-              span.style.whiteSpace = "pre";
-              span.style.color = "transparent";
-              span.style.pointerEvents = "none";
-              textLayerRef.current.appendChild(span);
-            }
-          } catch { /* text extraction not critical */ }
-        }
-      } catch (err: any) {
-        console.error("Render error:", err);
-      }
-    };
-
     renderPage();
-    return () => { cancelled = true; };
-  }, [currentPage, zoom]);
+  }, [currentPage, zoom, renderPage]);
 
   const drawOverlay = useCallback(() => {
     const overlay = overlayCanvasRef.current;
@@ -162,9 +162,7 @@ export function PdfViewer({
     if (pts.length > 1) {
       ctx.beginPath();
       ctx.moveTo(pts[0].x, pts[0].y);
-      for (let i = 1; i < pts.length; i++) {
-        ctx.lineTo(pts[i].x, pts[i].y);
-      }
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
       ctx.strokeStyle = toolModeRef.current === "eraser" ? "#fff" : "#f38ba8";
       ctx.lineWidth = toolModeRef.current === "eraser" ? 20 : 3;
       ctx.lineCap = "round";
@@ -184,7 +182,17 @@ export function PdfViewer({
 
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     const mode = toolModeRef.current;
-    if (mode === "select" || mode === "pan") return;
+
+    if (mode === "pan") {
+      const container = containerRef.current;
+      if (container) {
+        panStartRef.current = { x: e.clientX, y: e.clientY, scrollX: container.scrollLeft, scrollY: container.scrollTop };
+      }
+      return;
+    }
+
+    if (mode === "select") return;
+
     const coords = getCanvasCoords(e);
 
     if (mode === "draw" || mode === "eraser") {
@@ -199,8 +207,18 @@ export function PdfViewer({
   }, [getCanvasCoords]);
 
   const handleMouseMove = useCallback((e: React.MouseEvent) => {
-    const coords = getCanvasCoords(e);
     const mode = toolModeRef.current;
+
+    if (mode === "pan" && panStartRef.current) {
+      const container = containerRef.current;
+      if (container) {
+        container.scrollLeft = panStartRef.current.scrollX - (e.clientX - panStartRef.current.x);
+        container.scrollTop = panStartRef.current.scrollY - (e.clientY - panStartRef.current.y);
+      }
+      return;
+    }
+
+    const coords = getCanvasCoords(e);
 
     if ((mode === "draw" || mode === "eraser") && isDrawingRef.current) {
       drawPointsRef.current = [...drawPointsRef.current, coords];
@@ -216,8 +234,14 @@ export function PdfViewer({
 
   const handleMouseUp = useCallback(() => {
     const mode = toolModeRef.current;
+
+    if (mode === "pan") {
+      panStartRef.current = null;
+      return;
+    }
+
     const scale = viewportScaleRef.current;
-    const { w: canvasW, h: canvasH } = canvasSizeRef.current;
+    const { h: canvasH } = canvasSizeRef.current;
     const pageHeight = canvasH / scale;
 
     if ((mode === "draw" || mode === "eraser") && isDrawingRef.current) {
@@ -247,15 +271,12 @@ export function PdfViewer({
 
     if (!sel) return;
 
-    const selX = Math.min(sel.startX, sel.endX);
-    const selY = Math.min(sel.startY, sel.endY);
     const selW = Math.abs(sel.endX - sel.startX);
     const selH = Math.abs(sel.endY - sel.startY);
-
     if (selW < 5 || selH < 5) return;
 
-    const pageX = selX / scale;
-    const pageY = pageHeight - (selY / scale) - (selH / scale);
+    const pageX = Math.min(sel.startX, sel.endX) / scale;
+    const pageY = pageHeight - (Math.min(sel.startY, sel.endY) / scale) - (selH / scale);
 
     if (mode === "text") {
       const text = prompt("Enter text:");
@@ -284,15 +305,15 @@ export function PdfViewer({
 
   const getCursor = () => {
     switch (toolMode) {
-      case "pan": return "grab";
+      case "pan": return panStartRef.current ? "grabbing" : "grab";
       case "select": return "default";
       default: return "crosshair";
     }
   };
 
   return (
-    <div ref={containerRef} className="pdf-viewer" style={{ cursor: getCursor() }}>
-      <div className="pdf-page-container" style={{ position: "relative" }}>
+    <div ref={containerRef} className="pdf-viewer" style={{ cursor: getCursor(), overflow: "auto" }}>
+      <div className="pdf-page-container" style={{ position: "relative", display: "inline-block" }}>
         <canvas ref={canvasRef} style={{ display: "block" }} />
         <canvas
           ref={overlayCanvasRef}
@@ -306,6 +327,7 @@ export function PdfViewer({
               drawPointsRef.current = [];
             }
             selectionRef.current = null;
+            panStartRef.current = null;
             drawOverlay();
           }}
         />
